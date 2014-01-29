@@ -783,7 +783,10 @@ def main():
     parser = argparse.ArgumentParser(
         description="""File manager that can import files,
                         export file sets based on a list of hashes, export files NOT in a list, etc.""", epilog="""
-                        Expand this!!!
+                        This program can be used to manage files of any type. Before use, adjust the value of
+                        extensions at the top of the file. Only files having an extension in this set will be
+                        imported. A list of files that weren't imported will be documented in a log file when
+                        the import operation finishes.
                         """)
     # TODO actually Expand this!!!
 
