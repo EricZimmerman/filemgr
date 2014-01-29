@@ -31,14 +31,11 @@ class ED2KHash(object):
         self.md4 = hashlib.new('md4')
 
     def update(self, data):
-        #   assert type(data) == str
         data_len = len(data)
-
         for d in (data[i:i + ED2KHash.MAGICLEN] for i in range(0, data_len, ED2KHash.MAGICLEN)):
             self._update(d)
 
     def _update(self, data):
-        #     assert type(data) == str
         data_len = len(data)
         assert data_len <= ED2KHash.MAGICLEN
 
@@ -48,7 +45,7 @@ class ED2KHash(object):
             self.md4.update(data)
             self.pos = newpos
             return
-        else:  # newpos >= ED2KHash.MAGICLEN
+        else:
             prev = data[:ED2KHash.MAGICLEN - self.pos]
             next_val = data[ED2KHash.MAGICLEN - self.pos:]
             self.md4.update(prev)
@@ -64,7 +61,6 @@ class ED2KHash(object):
         else:
             m = hashlib.new('md4')
             newhashes = self.hashes + [self.md4.digest()]
-
             m.update(b''.join(newhashes))
             return m.digest()
 
