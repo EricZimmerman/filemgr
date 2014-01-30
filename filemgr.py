@@ -19,9 +19,6 @@ extensions = {'.jpg', '.avi', '.ram', '.rm', '.wmv', '.pdf', '.mov', '.mp4', '.f
 
 BUFSIZE = 8192  # file reading buffer size
 
-SIMULATE_FILE_DELETE = True  # don't actually delete files for now
-
-
 class ED2KHash(object):
     MAGICLEN = 9728000
 
@@ -75,7 +72,7 @@ class ApplicationConfiguration(object):
         self.__database_name = 'filemgr.db3'
         self.__base_directory = ''
         self.__database_file = ''
-        self.__delete_existing = False
+        self.__delete_existing = ''
         self.__copy_new_destination = ''
         self.__export_directory = ''
         self.__rename_exported = False
@@ -223,12 +220,10 @@ def import_files_work(appconfig, dirname):
     file_counter = 0
 
     for dirpath, dirnames, files in os.walk(dirname):
+        print("\nLooking for files in {}...".format(dirpath))
 
-        # files = [x.lower() for x in files]
-        print(
-            "\nLooking for files in {}..."
-            .format(dirpath))
         total_files += len(files)  # TODO is this tanking performance? better to move to counter inside loop?
+
         for name in files:
             full_path_name = os.path.join(dirpath, name)
 
@@ -244,9 +239,11 @@ def import_files_work(appconfig, dirname):
 
                         if not file_exists_in_database(appconfig, fileinfo):
                             files_added_to_database += 1
-                            print("\t\t({}/{}: '{}' does not exist in database! Adding...".format(file_counter,
-                                                                                                  total_files,
-                                                                                                  full_path_name))
+                            print("\t\t({} ({}/{}): '{}' does not exist in database! Adding...".format
+                                                                                    (datetime.datetime.now(),
+                                                                                    file_counter,
+                                                                                    total_files,
+                                                                                    full_path_name))
                             add_file_to_db(appconfig, fileinfo)
                         else:
                             pass  # do anything else here? should i check if file exists in file system? who cares tho
@@ -265,14 +262,17 @@ def import_files_work(appconfig, dirname):
                                 os.mkdir(appconfig.copy_new_destination)
 
                                 # TODO should this create the 2 char structure too? for now, just copy it
-
                                 # TODO need to write a log file with originating name and new path to root of copy_new_destination
                                 # TODO this should check for a file with same name in destination and, if found, make it unique!
                             copy_name = os.path.join(appconfig.copy_new_destination, name)
                             shutil.copyfile(full_path_name, copy_name)
 
                         if appconfig.delete_existing:
-                            if not SIMULATE_FILE_DELETE:
+                            if appconfig.delete_existing == 'yes':
+                                print("\t\t({} ({}/{}): Deleting '{}'...".format(datetime.datetime.now(),
+                                                                                    file_counter,
+                                                                                    total_files,
+                                                                                    full_path_name))
                                 os.remove(full_path_name)
                             files_deleted += 1
                     else:
@@ -381,11 +381,11 @@ def get_file_data(file):
     return fileinfo
 
 
-def generate_missing_hashes(appconfig, file):
-    """ Given file, look for missing hashes, generate them, and update the
-    database """
-
-    return "not done yet"
+# def generate_missing_hashes(appconfig, file):
+#     """ Given file, look for missing hashes, generate them, and update the
+#     database """
+#
+#     return "not done yet"
 
 
 def setup_base_directory(directory):
@@ -431,8 +431,47 @@ def check_db(appconfig):
 
         conn.commit()
 
+    c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='importedpaths';")
+
+    row = c.fetchone()
+
+    if row is None:
+        print("Table 'importedpaths' is missing!. Creating...")
+        c.execute('''CREATE TABLE importedpaths
+             (pathID INTEGER PRIMARY KEY AUTOINCREMENT, importedpath TEXT, imported_date TEXT)''')
+
+        conn.commit()
+
     conn.close()
 
+def add_import_path_to_db(appconfig, path_name):
+    conn = sqlite3.connect(appconfig.database_file)
+
+    c = conn.cursor()
+
+    c.execute("INSERT INTO importedpaths (importedpath, imported_date) VALUES (?, ?);", (path_name,datetime.datetime.now()))
+
+    conn.commit()
+
+    conn.close()
+
+def check_import_path_in_db(appconfig, path_name):
+    conn = sqlite3.connect(appconfig.database_file)
+
+    c = conn.cursor()
+
+    c.execute("SELECT imported_date FROM importedpaths WHERE importedpath = ?;", (path_name,))
+
+    rows = c.fetchall()
+
+    conn.close()
+
+    dates = []
+
+    for row in rows:
+        dates.append(row[0])
+
+    return dates
 
 def generate_hash_list(appconfig, hash_type, suppress_file_info):
     outfile = os.path.join(appconfig.base_directory,
@@ -510,6 +549,19 @@ def import_files(appconfig, directories):
     for directory in directories:
         directory = directory.strip()
         if os.path.isdir(directory):
+
+            import_history = check_import_path_in_db(appconfig, directory)
+
+            if len(import_history) > 0:
+
+                print("\n\n**** '{}' has already been imported on {}. Continue: [Y|n]:".format(directory,','.join(import_history)))
+                answer = input()
+                if answer.lower() == 'n':
+                    print("**** Skipping '{}'\n".format(directory))
+                    continue
+
+            add_import_path_to_db(appconfig, directory)
+
             (files_added_to_database, total_files, files_deleted, files_copied, files_with_duplicate_hashes,
              files_with_invalid_extensions) = import_files_work(appconfig, directory)
 
@@ -707,7 +759,7 @@ def export_files(appconfig, export_existing, file_name):
                 else:
                     out_path = os.path.join(export_directory, file_path)
 
-                copy_file(abs_path, log_file, out_path)
+                copy_file(abs_path, log_file, out_path) # TODO Error handling here
     else:
         hashes = []
         for line in hash_file:
@@ -738,7 +790,7 @@ def export_files(appconfig, export_existing, file_name):
             else:
                 out_path = os.path.join(export_directory, row[1])
 
-            copy_file(abs_path, log_file, out_path)
+            copy_file(abs_path, log_file, out_path) # TODO Error handling here
 
     hash_file.close()
     log_file.close()
@@ -762,7 +814,7 @@ def export_files(appconfig, export_existing, file_name):
                 z_file.write(full_name, archive_name)
         z_file.close()
 
-        print("\t\tRemoving '{} since export was zipped...'\n".format(export_directory))
+        print("\t\tRemoving '{} since export was zipped to {}...'\n".format(export_directory, zip_name))
         shutil.rmtree(export_directory)
 
     print("\n\t\tSaw {} {} hashes in '{}'. Files found: {}. See '{}' for details.".format(hash_count, hash_name,
@@ -780,11 +832,10 @@ def main():
         description="""File manager that can import files,
                         export file sets based on a list of hashes, export files NOT in a list, etc.""", epilog="""
                         This program can be used to manage files of any type. Before use, adjust the value of
-                        extensions at the top of the file. Only files having an extension in this set will be
+                        'extensions' at the top of the file. Only files having an extension in this set will be
                         imported. A list of files that weren't imported will be documented in a log file when
                         the import operation finishes.
                         """)
-    # TODO actually Expand this!!!
 
     parser.add_argument("base_directory", help="""The root directory where files
                                                 will live. This is also where the database of file info will
@@ -799,8 +850,12 @@ def main():
                                 files from. Enclose directories with spaces in double quotes.
                                 """, metavar='PATHS_TO_IMPORT_FROM')
     import_group.add_argument(
-        "--delete_existing", action="store_true", help="""When importing, delete source files if
-                                                        they already exist in file store""")
+        "--delete_existing",  choices=['yes', 'simulate'], help="""When importing, delete source files if
+                                                        they already exist in file store. If set to 'simulate' files
+                                                         will not actually be deleted. This is useful to see what
+                                                         would happen as a result of using this flag without actually
+                                                         deleting files.
+                                                        """)
 
     import_group.add_argument("--copy_new_destination", help="""The directory to copy any newly imported files into.
                                                     No renaming of files (except when conflicts exist) will be done.
