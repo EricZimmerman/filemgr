@@ -8,6 +8,8 @@ import shutil
 import datetime
 import re
 import zipfile
+import logging
+import sys
 
 # TODO use pathlib vs os.path calls?
 # TODO http://docs.sqlalchemy.org/en/rel_0_9/orm/tutorial.html ??
@@ -15,9 +17,23 @@ import zipfile
 
 # a list of valid file extensions to import. anything else will be skipped. make it a set in case people add dupes
 extensions = {'.jpg', '.avi', '.ram', '.rm', '.wmv', '.pdf', '.mov', '.mp4', '.flv', '.jpe', '.jpeg', '.mpg', '.mpe',
-              '.mpeg', '.png'}
+              '.mpeg', '.png', '.3g2', '.3gp', '.asf', '.bmp', '.divx', '.gif', '.jpg', '.m1v', '.vob', '.mod', '.tif'}
 
-BUFSIZE = 8192  # file reading buffer size
+BUFSIZE = 65536  #8192  # file reading buffer size
+
+logger = logging.getLogger('filemgr')
+logger.setLevel(logging.CRITICAL)
+fh = logging.FileHandler('filemgr_debug.log')
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+fh.setFormatter(formatter)
+logger.addHandler(fh)
+
+def safeprint(s):
+    try:
+        print(s)
+    except UnicodeEncodeError:
+        print(s.encode('utf8').decode(sys.stdout.encoding))
+
 
 class ED2KHash(object):
     MAGICLEN = 9728000
@@ -62,7 +78,6 @@ class ED2KHash(object):
             return m.digest()
 
 
-# is this implementation overkill? should i have done like in Class Foo below and forgo explicit getters/setters?
 class ApplicationConfiguration(object):
     """
     Holds configuration values used in various places
@@ -77,6 +92,7 @@ class ApplicationConfiguration(object):
         self.__export_directory = ''
         self.__rename_exported = False
         self.__zip_exported = False
+        self.__delete_empty_directories = ''
 
     def get_database_name(self):
         return self.__database_name
@@ -109,6 +125,14 @@ class ApplicationConfiguration(object):
         self.__delete_existing = delete_existing
 
     delete_existing = property(get_delete_existing, set_delete_existing)
+
+    def get_delete_empty_directories(self):
+        return self.__delete_empty_directories
+
+    def set_delete_empty_directories(self, delete_empty_directories):
+        self.__delete_empty_directories = delete_empty_directories
+
+    delete_empty_directories = property(get_delete_empty_directories, set_delete_empty_directories)
 
     def get_export_directory(self):
         return self.__export_directory
@@ -219,10 +243,22 @@ def import_files_work(appconfig, dirname):
     files_copied = 0
     file_counter = 0
 
-    for dirpath, dirnames, files in os.walk(dirname):
-        print("\nLooking for files in {}...".format(dirpath))
+    # Looking up each hash is sllllllow, so pull em all in as a set and just look there!
+    print("Getting existing hashes from database...")
+    existing_hashes = get_sha1b32_from_database(appconfig)
 
-        total_files += len(files)  # TODO is this tanking performance? better to move to counter inside loop?
+    print("Got {:,d} hashes from database. Looking for files.\n".format(len(existing_hashes)))
+
+    for dirpath, dirnames, files in os.walk(dirname):
+
+        total_files += len(files)
+
+        file_counter = 0
+
+        if len(files) > 0:
+            safeprint("\nFound {:,d} files in {}. Processing...".format(len(files), dirpath))
+
+            logger.info("Found {:,d} files in {}".format(len(files), dirpath))
 
         for name in files:
             full_path_name = os.path.join(dirpath, name)
@@ -235,22 +271,45 @@ def import_files_work(appconfig, dirname):
                     ext = parts[1]
 
                     if ext in extensions:
+                        logger.info(
+                            "{} before fileinfo = get_file_data(full_path_name)".format(datetime.datetime.now().strftime('%x %X')))
+
                         fileinfo = get_file_data(full_path_name)
 
-                        if not file_exists_in_database(appconfig, fileinfo):
+                        logger.info("{} after fileinfo = get_file_data(full_path_name)".format(datetime.datetime.now().strftime('%x %X')))
+
+                        if not fileinfo['hashes']['sha1b32'] in existing_hashes:
                             files_added_to_database += 1
-                            print("\t\t({} ({}/{}): '{}' does not exist in database! Adding...".format
-                                                                                    (datetime.datetime.now(),
-                                                                                    file_counter,
-                                                                                    total_files,
-                                                                                    full_path_name))
+
+                            safeprint("\n\t\t({} ({:,d}/{:,d}): '{}' does not exist in database! Adding...".format
+                                  (datetime.datetime.now().strftime('%x %X'),
+                                   file_counter,
+                                   len(files),
+                                   full_path_name))
+
+                            # since this is a new file, we add it to our set for future import operations
+                            existing_hashes.add(fileinfo['hashes']['sha1b32'])
+
                             add_file_to_db(appconfig, fileinfo)
                         else:
                             pass  # do anything else here? should i check if file exists in file system? who cares tho
                             # as this syncs it up maybe here is where you do extra hashing of what is on file
                             #  system to make sure the 2 match, properly named, etc
 
+                        logger.info("{} before copied = copy_file_to_store(appconfig, fileinfo)):".format(
+                            datetime.datetime.now().strftime('%x %X')))
+
                         copied = copy_file_to_store(appconfig, fileinfo)
+
+                        if copied:
+                            safeprint(
+                                '\t\t({} ({:,d}/{:,d}): File with SHA-1 Base32 hash {} does not exist in file store! Copying {:,d} bytes...'.format(
+                                    datetime.datetime.now().strftime('%x %X'),
+                                    file_counter,
+                                    len(files), fileinfo['hashes']['sha1b32'], fileinfo['filesize']))
+
+                        logger.info("{} after copied = copy_file_to_store(appconfig, fileinfo)):".format(
+                            datetime.datetime.now().strftime('%x %X')))
 
                         if not copied:
                             files_with_duplicate_hashes.append(full_path_name)
@@ -268,15 +327,26 @@ def import_files_work(appconfig, dirname):
                             shutil.copyfile(full_path_name, copy_name)
 
                         if appconfig.delete_existing:
-                            if appconfig.delete_existing == 'yes':
-                                print("\t\t({} ({}/{}): Deleting '{}'...".format(datetime.datetime.now(),
-                                                                                    file_counter,
-                                                                                    total_files,
-                                                                                    full_path_name))
-                                os.remove(full_path_name)
-                            files_deleted += 1
+
+                                safeprint("\t\t({} ({:,d}/{:,d}): Deleting '{}'...".format(datetime.datetime.now().strftime('%x %X'),
+                                                                                       file_counter,
+                                                                                       len(files),
+                                                                                       full_path_name))
+
+                                if appconfig.delete_existing == 'yes':
+                                    os.remove(full_path_name)
+
+                                files_deleted += 1
+
+
                     else:
                         files_with_invalid_extensions.append(os.path.join(dirpath, name))
+
+        if appconfig.delete_empty_directories:
+            if appconfig.delete_empty_directories == 'yes':
+                if not os.listdir(dirpath):
+                    safeprint("Deleting emtpty directory '{}'...".format(dirpath))
+                    os.rmdir(dirpath)
 
     return (files_added_to_database, total_files, files_deleted, files_copied, files_with_duplicate_hashes,
             files_with_invalid_extensions)
@@ -303,6 +373,29 @@ def file_exists_in_database(appconfig, fileinfo):
         return False
     else:
         return True
+
+
+def get_sha1b32_from_database(appconfig):
+    # TODO need methods to insert new hash types into DB if they do not exist,
+    # pull them out and cache on startup or when first pulled?
+    #http://docs.python.org/2/library/sqlite3.html
+    #http://www.tutorialspoint.com/sqlite/sqlite_python.htm
+
+    conn = sqlite3.connect(appconfig.database_file)
+    c = conn.cursor()
+
+    hash_id = get_hash_id_from_hash_name(appconfig, "sha1b32")
+
+    c.execute(
+        "SELECT filehash FROM filehashes WHERE hashid = ?;", (hash_id,))
+
+    rows = c.fetchall()
+
+    conn.close()
+
+    hashes = [row[0] for row in rows]
+
+    return set(hashes)
 
 
 def copy_file_to_store(appconfig, fileinfo):
@@ -332,9 +425,9 @@ def copy_file_to_store(appconfig, fileinfo):
     file_copied = False
 
     if len(listing) == 0:
-        print(
-            '\t\tFile with SHA-1 Base32 hash {} does not exist in {}! Copying...'.format(fileinfo['hashes']['sha1b32'],
-                                                                                         file_directory))
+        # print(
+        #     '\t\tFile with SHA-1 Base32 hash {} does not exist in {}! Copying {} bytes...'.format(fileinfo['hashes']['sha1b32'],
+        #                                                                                  file_directory,fileinfo['hashes']['filesize']))
         shutil.copyfile(filename, dest_filename)
         file_copied = True
 
@@ -437,41 +530,47 @@ def check_db(appconfig):
 
     if row is None:
         print("Table 'importedpaths' is missing!. Creating...")
-        c.execute('''CREATE TABLE importedpaths
-             (pathID INTEGER PRIMARY KEY AUTOINCREMENT, importedpath TEXT, imported_date TEXT)''')
+        c.execute('''CREATE TABLE importedpaths (pathID INTEGER PRIMARY KEY AUTOINCREMENT, importedpath TEXT,
+                  imported_date TEXT, files_added_to_database INTEGER, total_files INTEGER, files_deleted INTEGER,
+                  files_copied INTEGER, files_with_duplicate_hashes INTEGER, files_with_invalid_extensions INTEGER);''')
 
         conn.commit()
 
     conn.close()
 
-def add_import_path_to_db(appconfig, path_name):
+
+def add_import_path_to_db(appconfig, path_name, files_added_to_database, total_files, files_deleted, files_copied,
+                          files_with_duplicate_hashes, files_with_invalid_extensions):
     conn = sqlite3.connect(appconfig.database_file)
 
     c = conn.cursor()
 
-    c.execute("INSERT INTO importedpaths (importedpath, imported_date) VALUES (?, ?);", (path_name,datetime.datetime.now()))
+    c.execute(
+        "INSERT INTO importedpaths (importedpath, imported_date, files_added_to_database, total_files, files_deleted, files_copied, files_with_duplicate_hashes, files_with_invalid_extensions) VALUES (?, ?,?, ?,?, ?,?, ?);",
+        (path_name, datetime.datetime.now(), files_added_to_database, total_files, files_deleted, files_copied,
+         len(files_with_duplicate_hashes), len(files_with_invalid_extensions)))
 
     conn.commit()
 
     conn.close()
+
 
 def check_import_path_in_db(appconfig, path_name):
     conn = sqlite3.connect(appconfig.database_file)
 
     c = conn.cursor()
 
-    c.execute("SELECT imported_date FROM importedpaths WHERE importedpath = ?;", (path_name,))
+    c.execute("SELECT imported_date FROM importedpaths WHERE importedpath = ? ORDER BY imported_date DESC;",
+              (path_name,))
 
     rows = c.fetchall()
 
     conn.close()
-
-    dates = []
-
-    for row in rows:
-        dates.append(row[0])
+    #2014-02-05 10:22:30.214031
+    dates = [datetime.datetime.strptime(row[0],'%Y-%m-%d %H:%M:%S.%f').strftime('%x %X') for row in rows]
 
     return dates
+
 
 def generate_hash_list(appconfig, hash_type, suppress_file_info):
     outfile = os.path.join(appconfig.base_directory,
@@ -553,22 +652,24 @@ def import_files(appconfig, directories):
             import_history = check_import_path_in_db(appconfig, directory)
 
             if len(import_history) > 0:
-
-                print("\n\n**** '{}' has already been imported on {}. Continue: [Y|n]:".format(directory,','.join(import_history)))
-                answer = input()
-                if answer.lower() == 'n':
+                answer = input(
+                    "\n\n**** '{}' has already been imported on:\n\n{}\n\nContinue: [y|N]: ".format(directory,
+                                                                                                    '\n'.join(
+                                                                                                        import_history)))
+                if not answer.lower() == 'y':
                     print("**** Skipping '{}'\n".format(directory))
                     continue
-
-            add_import_path_to_db(appconfig, directory)
 
             (files_added_to_database, total_files, files_deleted, files_copied, files_with_duplicate_hashes,
              files_with_invalid_extensions) = import_files_work(appconfig, directory)
 
+            add_import_path_to_db(appconfig, directory, files_added_to_database, total_files, files_deleted,
+                                  files_copied, files_with_duplicate_hashes, files_with_invalid_extensions)
+
             print(
-                '\n' + '*' * 4 + """ {} total files found. {} copied to file store and
-                                {} files were added to the database. {} files had duplicate hashes.
-                                {} files had invalid extensions (see log file for details)""".format(
+                '\n' + '*' * 4 + """ {:,d} total files found. {:,d} copied to file store and
+                                {:,d} files were added to the database. {:,d} files had duplicate hashes.
+                                {:,d} files had invalid extensions (see log file for details)""".format(
                     total_files, files_copied, files_added_to_database, len(files_with_duplicate_hashes),
                     len(files_with_invalid_extensions)))
 
@@ -580,14 +681,14 @@ def import_files(appconfig, directories):
 
             with open(logfile_name, 'w+', encoding="utf-16") as logfile:
                 logfile.write('Directory processed: {}\n\n'.format(directory))
-                logfile.write('Files found: {}\n'.format(total_files))
-                logfile.write('Files copied to data store: {}\n'.format(files_copied))
-                logfile.write('Files added to database: {}\n'.format(files_added_to_database))
+                logfile.write('Files found: {:,d}\n'.format(total_files))
+                logfile.write('Files copied to data store: {:,d}\n'.format(files_copied))
+                logfile.write('Files added to database: {:,d}\n'.format(files_added_to_database))
 
-                logfile.write('Files with duplicate hashes: {}\n\n'.format(len(files_with_duplicate_hashes)))
+                logfile.write('Files with duplicate hashes: {:,d}\n\n'.format(len(files_with_duplicate_hashes)))
 
                 if files_deleted > 0:
-                    logfile.write('Number of deleted files: {}\n\n'.format(files_deleted))
+                    logfile.write('Number of deleted files: {:,d}\n\n'.format(files_deleted))
 
                 logfile.write('*' * 78 + '\n\n')
 
@@ -600,7 +701,7 @@ def import_files(appconfig, directories):
                     logfile.write("{}\n".format(item))
 
             if appconfig.delete_existing and files_deleted > 0:
-                print(' ' * 5 + '{} files were deleted'.format(files_deleted))
+                print(' ' * 5 + '{:,d} files were deleted'.format(files_deleted))
         else:
             print("\t'{}' does not exist!".format(directory))
 
@@ -749,7 +850,7 @@ def export_files(appconfig, export_existing, file_name):
             (file_path, file_size) = check_file_exists_in_database(appconfig, hash_id, line)
 
             if file_path:
-                print("\t\tFile with hash '{}' found! Copying...".format(line))
+                print("\t\tFile with hash '{}' found! Copying {:,d} bytes...".format(line, file_size))
                 found_files += 1
                 abs_path = os.path.join(appconfig.base_directory, file_path)
 
@@ -759,12 +860,12 @@ def export_files(appconfig, export_existing, file_name):
                 else:
                     out_path = os.path.join(export_directory, file_path)
 
-                copy_file(abs_path, log_file, out_path) # TODO Error handling here
+                copy_file(abs_path, log_file, out_path)  # TODO Error handling here
     else:
-        hashes = []
-        for line in hash_file:
-            line = line.strip()
-            hashes.append(line)
+        hashes = [line.strip for line in hash_file]
+        # for line in hash_file:
+        #     line = line.strip()
+        #     hashes.append(line)
 
         hash_set = set(hashes)  # get rid of any dupes
         hash_count = len(hash_set)
@@ -790,7 +891,7 @@ def export_files(appconfig, export_existing, file_name):
             else:
                 out_path = os.path.join(export_directory, row[1])
 
-            copy_file(abs_path, log_file, out_path) # TODO Error handling here
+            copy_file(abs_path, log_file, out_path)  # TODO Error handling here
 
     hash_file.close()
     log_file.close()
@@ -817,9 +918,9 @@ def export_files(appconfig, export_existing, file_name):
         print("\t\tRemoving '{} since export was zipped to {}...'\n".format(export_directory, zip_name))
         shutil.rmtree(export_directory)
 
-    print("\n\t\tSaw {} {} hashes in '{}'. Files found: {}. See '{}' for details.".format(hash_count, hash_name,
-                                                                                          file_name, found_files,
-                                                                                          log_name))
+    print("\n\t\tSaw {:,d} {} hashes in '{}'. Files found: {:,d}. See '{}' for details.".format(hash_count, hash_name,
+                                                                                                file_name, found_files,
+                                                                                                log_name))
 
 
 def main():
@@ -847,14 +948,20 @@ def main():
     import_group = parser.add_argument_group('Import options', 'These options determine how files are imported')
     import_group.add_argument(
         "--import_from", help="""List of comma separated directories to import
-                                files from. Enclose directories with spaces in double quotes.
+                                files from. Enclose directories with spaces in double quotes. Directories should
+                                NOT have trailing slashes (i.e. C:\\foo is OK, but C:\\bar\\ is NOT OK
                                 """, metavar='PATHS_TO_IMPORT_FROM')
     import_group.add_argument(
-        "--delete_existing",  choices=['yes', 'simulate'], help="""When importing, delete source files if
+        "--delete_existing", choices=['yes', 'simulate'], help="""When importing, delete source files if
                                                         they already exist in file store. If set to 'simulate' files
                                                          will not actually be deleted. This is useful to see what
                                                          would happen as a result of using this flag without actually
                                                          deleting files.
+                                                        """)
+
+    import_group.add_argument(
+        "--delete_empty_directories", choices=['yes', 'simulate'], help="""When importing, delete any empty directories found.
+                                                        If set to 'simulate' directories will not actually be deleted.
                                                         """)
 
     import_group.add_argument("--copy_new_destination", help="""The directory to copy any newly imported files into.
@@ -912,6 +1019,9 @@ def main():
                                                     archive in --export_directory.
                                                     """, action="store_true")
 
+
+
+
     # this stores our application parameters so it can get passed around to functions
     appconfig = ApplicationConfiguration()
 
@@ -919,6 +1029,9 @@ def main():
 
     if args.delete_existing:
         appconfig.delete_existing = args.delete_existing
+
+    if args.delete_empty_directories:
+        appconfig.delete_empty_directories = args.delete_empty_directories
 
     if args.copy_new_destination:
         appconfig.copy_new_destination = args.copy_new_destination
