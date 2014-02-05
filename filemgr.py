@@ -11,15 +11,19 @@ import zipfile
 import logging
 import sys
 
-# TODO use pathlib vs os.path calls?
-# TODO http://docs.sqlalchemy.org/en/rel_0_9/orm/tutorial.html ??
+# TODO use pathlib vs os.path calls? this is 3.4 only
+# http://docs.sqlalchemy.org/en/rel_0_9/orm/tutorial.html ??
 # http://docs.python.org/3.4/howto/logging-cookbook.html
 
 # a list of valid file extensions to import. anything else will be skipped. make it a set in case people add dupes
 extensions = {'.jpg', '.avi', '.ram', '.rm', '.wmv', '.pdf', '.mov', '.mp4', '.flv', '.jpe', '.jpeg', '.mpg', '.mpe',
-              '.mpeg', '.png', '.3g2', '.3gp', '.asf', '.bmp', '.divx', '.gif', '.jpg', '.m1v', '.vob', '.mod', '.tif'}
+              '.mpeg', '.png', '.3g2', '.3gp', '.asf', '.bmp', '.divx', '.gif', '.jpg', '.m1v', '.vob', '.mod', '.tif', '.mkv', '.jp2'}
 
-BUFSIZE = 65536  #8192  # file reading buffer size
+# a list of extensions to delete. If any of these extensions are found in 'extensions' as well, the import will be cancelled
+auto_delete_extensions = {'.db', '.com', '.scr', '.htm', '.html', '.url', '.thm', '.tmp', '.ds_store', '.ico', '.rtf',
+                          '.doc', '.ini'}
+
+BUFSIZE = 65536  #8192 # file reading buffer size 8192 * 64?
 
 logger = logging.getLogger('filemgr')
 logger.setLevel(logging.CRITICAL)
@@ -27,6 +31,7 @@ fh = logging.FileHandler('filemgr_debug.log')
 formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 fh.setFormatter(formatter)
 logger.addHandler(fh)
+
 
 def safeprint(s):
     try:
@@ -202,8 +207,6 @@ def add_file_to_db(appconfig, fileinfo):
 
     c = conn.cursor()
 
-    #http://docs.python.org/2/library/sqlite3.html
-
     # check if hashtypes has an entry for each hash in hashes
     hashtypes = {}
 
@@ -241,7 +244,6 @@ def import_files_work(appconfig, dirname):
     files_deleted = 0
     files_with_duplicate_hashes = []
     files_copied = 0
-    file_counter = 0
 
     # Looking up each hash is sllllllow, so pull em all in as a set and just look there!
     print("Getting existing hashes from database...")
@@ -249,14 +251,14 @@ def import_files_work(appconfig, dirname):
 
     print("Got {:,d} hashes from database. Looking for files.\n".format(len(existing_hashes)))
 
-    for dirpath, dirnames, files in os.walk(dirname):
+    for dirpath, dirnames, files in os.walk(dirname, topdown=False):
 
         total_files += len(files)
 
         file_counter = 0
 
         if len(files) > 0:
-            safeprint("\nFound {:,d} files in {}. Processing...".format(len(files), dirpath))
+            safeprint("\n\tFound {:,d} files in {}. Processing...".format(len(files), dirpath))
 
             logger.info("Found {:,d} files in {}".format(len(files), dirpath))
 
@@ -270,22 +272,34 @@ def import_files_work(appconfig, dirname):
                 if len(parts) == 2:
                     ext = parts[1]
 
+                    # some files are always bad, so just make em go away.
+                    if ext in auto_delete_extensions:
+                        safeprint(
+                            '\t\t({} [{:,d}/{:,d}]): File {} has an autonuke extension. Deleting...'.format(
+                                datetime.datetime.now().strftime('%x %X'),
+                                file_counter,
+                                len(files), full_path_name))
+                        os.remove(full_path_name)
+                        continue
+
                     if ext in extensions:
                         logger.info(
-                            "{} before fileinfo = get_file_data(full_path_name)".format(datetime.datetime.now().strftime('%x %X')))
+                            "{} before fileinfo = get_file_data(full_path_name)".format(
+                                datetime.datetime.now().strftime('%x %X')))
 
                         fileinfo = get_file_data(full_path_name)
 
-                        logger.info("{} after fileinfo = get_file_data(full_path_name)".format(datetime.datetime.now().strftime('%x %X')))
+                        logger.info("{} after fileinfo = get_file_data(full_path_name)".format(
+                            datetime.datetime.now().strftime('%x %X')))
 
                         if not fileinfo['hashes']['sha1b32'] in existing_hashes:
                             files_added_to_database += 1
 
-                            safeprint("\n\t\t({} ({:,d}/{:,d}): '{}' does not exist in database! Adding...".format
-                                  (datetime.datetime.now().strftime('%x %X'),
-                                   file_counter,
-                                   len(files),
-                                   full_path_name))
+                            safeprint("\t\t({} [{:,d}/{:,d}]): '{}' does not exist in database! Adding...".format
+                                      (datetime.datetime.now().strftime('%x %X'),
+                                       file_counter,
+                                       len(files),
+                                       full_path_name))
 
                             # since this is a new file, we add it to our set for future import operations
                             existing_hashes.add(fileinfo['hashes']['sha1b32'])
@@ -303,7 +317,7 @@ def import_files_work(appconfig, dirname):
 
                         if copied:
                             safeprint(
-                                '\t\t({} ({:,d}/{:,d}): File with SHA-1 Base32 hash {} does not exist in file store! Copying {:,d} bytes...'.format(
+                                '\t\t({} [{:,d}/{:,d}]): File with SHA-1 Base32 hash {} does not exist in file store! Copying {:,d} bytes...'.format(
                                     datetime.datetime.now().strftime('%x %X'),
                                     file_counter,
                                     len(files), fileinfo['hashes']['sha1b32'], fileinfo['filesize']))
@@ -320,32 +334,46 @@ def import_files_work(appconfig, dirname):
                             if not os.path.exists(appconfig.copy_new_destination):
                                 os.mkdir(appconfig.copy_new_destination)
 
-                                # TODO should this create the 2 char structure too? for now, just copy it
-                                # TODO need to write a log file with originating name and new path to root of copy_new_destination
-                                # TODO this should check for a file with same name in destination and, if found, make it unique!
+                            # TODO should this create the 2 char structure too? for now, just copy it
+
                             copy_name = os.path.join(appconfig.copy_new_destination, name)
+
+                            unique_prefix = 0
+
+                            while os.path.isfile(copy_name):
+                                # file exists, so get a unique name
+                                copy_name = os.path.join(appconfig.copy_new_destination,
+                                                         str(unique_prefix) + "_" + name)
+                                unique_prefix += 1
+
                             shutil.copyfile(full_path_name, copy_name)
 
+                            outfile = os.path.join(appconfig.copy_new_destination,
+                                                   "!!" + datetime.datetime.now().strftime(
+                                                       "%Y-%m-%d") + " File copy log " + '.txt')
+                            with open(outfile, 'a', encoding="utf-16") as logfile:
+                                logfile.write(
+                                    "{}: Copied {} to {}.\n".format(datetime.datetime.now(), full_path_name, copy_name))
+
                         if appconfig.delete_existing:
+                            safeprint("\t\t({} [{:,d}/{:,d}]): Deleting '{}'...".format(
+                                datetime.datetime.now().strftime('%x %X'),
+                                file_counter,
+                                len(files),
+                                full_path_name))
 
-                                safeprint("\t\t({} ({:,d}/{:,d}): Deleting '{}'...".format(datetime.datetime.now().strftime('%x %X'),
-                                                                                       file_counter,
-                                                                                       len(files),
-                                                                                       full_path_name))
+                            if appconfig.delete_existing == 'yes':
+                                os.remove(full_path_name)
 
-                                if appconfig.delete_existing == 'yes':
-                                    os.remove(full_path_name)
-
-                                files_deleted += 1
-
-
+                            files_deleted += 1
                     else:
                         files_with_invalid_extensions.append(os.path.join(dirpath, name))
 
         if appconfig.delete_empty_directories:
-            if appconfig.delete_empty_directories == 'yes':
-                if not os.listdir(dirpath):
-                    safeprint("Deleting emtpty directory '{}'...".format(dirpath))
+            if not os.listdir(dirpath):
+                safeprint("\t\t({} [{:,d}/{:,d}]): Deleting empty directory '{}'...".format(
+                    datetime.datetime.now().strftime('%x %X'), file_counter, len(files), dirpath))
+                if appconfig.delete_empty_directories == 'yes':
                     os.rmdir(dirpath)
 
     return (files_added_to_database, total_files, files_deleted, files_copied, files_with_duplicate_hashes,
@@ -354,10 +382,6 @@ def import_files_work(appconfig, dirname):
 
 def file_exists_in_database(appconfig, fileinfo):
     # TODO need methods to insert new hash types into DB if they do not exist,
-    # pull them out and cache on startup or when first pulled?
-    #http://docs.python.org/2/library/sqlite3.html
-    #http://www.tutorialspoint.com/sqlite/sqlite_python.htm
-
     conn = sqlite3.connect(appconfig.database_file)
     c = conn.cursor()
     c.execute(
@@ -378,8 +402,6 @@ def file_exists_in_database(appconfig, fileinfo):
 def get_sha1b32_from_database(appconfig):
     # TODO need methods to insert new hash types into DB if they do not exist,
     # pull them out and cache on startup or when first pulled?
-    #http://docs.python.org/2/library/sqlite3.html
-    #http://www.tutorialspoint.com/sqlite/sqlite_python.htm
 
     conn = sqlite3.connect(appconfig.database_file)
     c = conn.cursor()
@@ -425,9 +447,6 @@ def copy_file_to_store(appconfig, fileinfo):
     file_copied = False
 
     if len(listing) == 0:
-        # print(
-        #     '\t\tFile with SHA-1 Base32 hash {} does not exist in {}! Copying {} bytes...'.format(fileinfo['hashes']['sha1b32'],
-        #                                                                                  file_directory,fileinfo['hashes']['filesize']))
         shutil.copyfile(filename, dest_filename)
         file_copied = True
 
@@ -567,7 +586,7 @@ def check_import_path_in_db(appconfig, path_name):
 
     conn.close()
     #2014-02-05 10:22:30.214031
-    dates = [datetime.datetime.strptime(row[0],'%Y-%m-%d %H:%M:%S.%f').strftime('%x %X') for row in rows]
+    dates = [datetime.datetime.strptime(row[0], '%Y-%m-%d %H:%M:%S.%f').strftime('%x %X') for row in rows]
 
     return dates
 
@@ -667,9 +686,7 @@ def import_files(appconfig, directories):
                                   files_copied, files_with_duplicate_hashes, files_with_invalid_extensions)
 
             print(
-                '\n' + '*' * 4 + """ {:,d} total files found. {:,d} copied to file store and
-                                {:,d} files were added to the database. {:,d} files had duplicate hashes.
-                                {:,d} files had invalid extensions (see log file for details)""".format(
+                '\n' + '*' * 4 + """ {:,d} total files found. {:,d} copied to file store and {:,d} files were added to the database. {:,d} files had duplicate hashes. {:,d} files had invalid extensions (see log file for details)""".format(
                     total_files, files_copied, files_added_to_database, len(files_with_duplicate_hashes),
                     len(files_with_invalid_extensions)))
 
@@ -927,8 +944,6 @@ def main():
     # http://docs.python.org/3/howto/argparse.html
     # http://docs.python.org/3/library/argparse.html#module-argparse
 
-    # TODO Add error handling/try catch, etc
-
     parser = argparse.ArgumentParser(
         description="""File manager that can import files,
                         export file sets based on a list of hashes, export files NOT in a list, etc.""", epilog="""
@@ -1042,16 +1057,20 @@ def main():
 
     appconfig.database_file = os.path.join(appconfig.base_directory, appconfig.database_name)
 
+    print('\n\n')
+
     check_db(appconfig)
 
     # Process things in a sane order so things later down the list of options are as complete as possible
 
-    # TODO Keep track of paths already imported and datetime when imported. If imported from again, ask to confirm to
-    # avoid a bunch of duplicate work
-
     if args.import_from:  # since at least something was passed to this argument, lets try to import
-        directories = args.import_from.split(",")  # TODO can argparse do the split?
-        import_files(appconfig, directories)
+        if extensions.intersection(auto_delete_extensions):
+            print(
+                "Cannot import files as there is at least one extension in common between 'extensions' and 'auto_delete_extensions: {}".format(
+                    ", ".join(extensions.intersection(auto_delete_extensions))))
+        else:
+            directories = args.import_from.split(",")  # TODO can argparse do the split?
+            import_files(appconfig, directories)
 
     if args.generate_hash_list:
         (files_processed, hash_path) = generate_hash_list(appconfig, args.generate_hash_list, args.suppress_file_info)
@@ -1097,6 +1116,13 @@ def main():
             #print('\n'.join("%s: %s" % item for item in attrs.items()))
 
             # TODO have a built in web mode to allow searching, exporting etc?
+
+            # TODO Add error handling/try catch, etc
+            # TODO make backup of SQLite DB on startup (if newer than last)
+            # TODO add --purge_files that takes a list of files and cleans file store and DB of those hashes
+            # TODO add --print_stats (total files, totals by file extension?)
+            # TODO add --verify that compares whats on disk to what is in database and what is in database to what is on disk.
+            #   if on disk and not database, add, if in db and not disk, delete from db
 
 
 if __name__ == '__main__':
