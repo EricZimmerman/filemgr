@@ -17,11 +17,12 @@ import sys
 
 # a list of valid file extensions to import. anything else will be skipped. make it a set in case people add dupes
 extensions = {'.jpg', '.avi', '.ram', '.rm', '.wmv', '.pdf', '.mov', '.mp4', '.flv', '.jpe', '.jpeg', '.mpg', '.mpe',
-              '.mpeg', '.png', '.3g2', '.3gp', '.asf', '.bmp', '.divx', '.gif', '.jpg', '.m1v', '.vob', '.mod', '.tif', '.mkv', '.jp2'}
+              '.mpeg', '.png', '.3g2', '.3gp', '.asf', '.bmp', '.divx', '.gif', '.jpg', '.m1v', '.vob', '.mod', '.tif',
+              '.mkv', '.jp2', '.psd', '.m4v', '.pcx'}
 
 # a list of extensions to delete. If any of these extensions are found in 'extensions' as well, the import will be cancelled
 auto_delete_extensions = {'.db', '.com', '.scr', '.htm', '.html', '.url', '.thm', '.tmp', '.ds_store', '.ico', '.rtf',
-                          '.doc', '.ini'}
+                          '.doc', '.ini', '.ascii', '.dat', '.svg'}
 
 BUFSIZE = 65536  #8192 # file reading buffer size 8192 * 64?
 
@@ -226,7 +227,7 @@ def add_file_to_db(appconfig, fileinfo):
 
     fileid = c.lastrowid
 
-    # add each hash to filehashes
+    # add each hash to file hashes
     for hashtype in hashtypes:
         c.execute("INSERT INTO filehashes (hashID,fileID,filehash) VALUES (?,?,?);",
                   (hashtypes[hashtype], fileid, fileinfo['hashes'][hashtype]))
@@ -268,6 +269,12 @@ def import_files_work(appconfig, dirname):
             file_counter += 1
 
             if os.path.isfile(full_path_name):
+
+                if os.path.getsize(full_path_name) == 0:
+                    safeprint("\t\tDeleting 0 byte file '{}'.".format(full_path_name))
+                    os.remove(full_path_name)
+                    continue
+
                 parts = os.path.splitext(name.lower())
                 if len(parts) == 2:
                     ext = parts[1]
@@ -565,7 +572,7 @@ def add_import_path_to_db(appconfig, path_name, files_added_to_database, total_f
     c = conn.cursor()
 
     c.execute(
-        "INSERT INTO importedpaths (importedpath, imported_date, files_added_to_database, total_files, files_deleted, files_copied, files_with_duplicate_hashes, files_with_invalid_extensions) VALUES (?, ?,?, ?,?, ?,?, ?);",
+        "INSERT INTO importedpaths (importedpath, imported_date, files_added_to_database, total_files, files_deleted, files_copied, files_with_duplicate_hashes, files_with_invalid_extensions) VALUES (?, ?, ?, ?, ?, ?, ?, ?);",
         (path_name, datetime.datetime.now(), files_added_to_database, total_files, files_deleted, files_copied,
          len(files_with_duplicate_hashes), len(files_with_invalid_extensions)))
 
@@ -601,10 +608,10 @@ def generate_hash_list(appconfig, hash_type, suppress_file_info):
 
     file_cursor = conn.execute("SELECT files.filepath, files.filesize, files.fileID FROM files ORDER BY fileID")
 
-    sql = ""
+    sql = ''
 
     if hash_type == 'all':
-        sql = "SELECT hashid, hashname FROM hashtypes ORDER BY hashname ASC"
+        sql = 'SELECT hashid, hashname FROM hashtypes ORDER BY hashname ASC'
     else:
         sql = 'SELECT hashid, hashname FROM hashtypes WHERE hashname = "{}" ORDER BY hashname ASC'.format(hash_type)
 
@@ -1111,7 +1118,7 @@ def main():
         else:
             print("\t--export_directory must be set when exporting files! Export cancelled.")
 
-            # see whats set in appconfig
+            #see whats set in appconfig
             #attrs = vars(appconfig)
             #print('\n'.join("%s: %s" % item for item in attrs.items()))
 
@@ -1123,6 +1130,9 @@ def main():
             # TODO add --print_stats (total files, totals by file extension?)
             # TODO add --verify that compares whats on disk to what is in database and what is in database to what is on disk.
             #   if on disk and not database, add, if in db and not disk, delete from db
+
+    if not args.export_delta and not args.export_existing and not args.generate_hash_list and not args.import_from:
+        print("***Nothing to do! Please specify one or more options and try again.***")
 
 
 if __name__ == '__main__':
