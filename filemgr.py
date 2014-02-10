@@ -173,11 +173,6 @@ class ApplicationConfiguration(object):
     copy_new_destination = property(get_copy_new_destination, set_copy_new_destination)
 
 
-# Another way to do things
-#class Foo(object):
-#    def __init__(self,a=0,b=0):
-#        self.a,self.b = a,b
-
 def add_insert_hashtype(appconfig, hashtype):
     conn = sqlite3.connect(appconfig.database_file)
 
