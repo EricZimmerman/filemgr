@@ -1150,7 +1150,7 @@ def delete_file_from_db(appconfig, fileinfo):
 
 
 def verify(appconfig):
-    print("\n*** File manager verification ***\n")
+    print("*** File manager verification ***\n")
 
     print("Beginning stage 1 (comparing database against file store)...")
     db_to_fs_bad = check_db_to_fs(appconfig)
@@ -1386,13 +1386,12 @@ def main():
             # TODO Add error handling/try catch, etc
             # TODO make backup of SQLite DB on startup (if newer than last)
             # TODO add --purge_files that takes a list of files and cleans file store and DB of those hashes
-            # TODO add --verify that compares whats on disk to what is in database and what is in database to what is on disk.
-            #   if on disk and not database, add, if in db and not disk, delete from db
 
     if args.print_stats:
         dump_stats(appconfig, args.print_stats)
 
     if not args.export_delta and not args.export_existing and not args.generate_hash_list and not args.import_from and not args.print_stats and not args.verify:
+        print("You didnt ask me to do anything, so here are some statistics:")
         dump_stats(appconfig, 'lite')
 
 
