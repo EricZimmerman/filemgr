@@ -212,7 +212,7 @@ def add_file_to_db(appconfig, fileinfo):
     filename = fileinfo['inputfile']
     basefilename = os.path.split(filename)[-1]
     basefilenameparts = os.path.splitext(basefilename)
-    file_ext = basefilenameparts[1]
+    file_ext = basefilenameparts[1].lower()
 
     file_directory = os.path.join('files', fileinfo['hashes']['sha1b32'][0:2], fileinfo['hashes']['sha1b32'] + file_ext)
 
@@ -431,7 +431,7 @@ def copy_file_to_store(appconfig, fileinfo):
     filename = fileinfo['inputfile']
     base_filename = os.path.split(filename)[-1]
     base_filename_parts = os.path.splitext(base_filename)
-    file_ext = base_filename_parts[1]
+    file_ext = base_filename_parts[1].lower()
 
     files_directory = os.path.join(appconfig.base_directory, 'files')
 
@@ -442,7 +442,7 @@ def copy_file_to_store(appconfig, fileinfo):
 
     target_filemask = os.path.join(file_directory, fileinfo['hashes']['sha1b32'] + '*')
 
-    dest_filename = os.path.join(file_directory, fileinfo['hashes']['sha1b32'] + file_ext.lower())
+    dest_filename = os.path.join(file_directory, fileinfo['hashes']['sha1b32'] + file_ext)
 
     listing = glob.glob(target_filemask)
 
@@ -701,7 +701,7 @@ def import_files(appconfig, directories):
             with open(logfile_name, 'w+', encoding="utf-16") as logfile:
                 logfile.write('Directory processed: {}\n\n'.format(directory))
                 logfile.write('Files found: {:,d}\n'.format(total_files))
-                logfile.write('Files copied to data store: {:,d}\n'.format(files_copied))
+                logfile.write('Files copied to file store: {:,d}\n'.format(files_copied))
                 logfile.write('Files added to database: {:,d}\n'.format(files_added_to_database))
 
                 logfile.write('Files with duplicate hashes: {:,d}\n\n'.format(len(files_with_duplicate_hashes)))
@@ -942,10 +942,261 @@ def export_files(appconfig, export_existing, file_name):
                                                                                                 log_name))
 
 
-def main():
-    # http://docs.python.org/3/howto/argparse.html
-    # http://docs.python.org/3/library/argparse.html#module-argparse
+def get_stats(appconfig, stats_level):
+    # total files
+    # total size
 
+    total_store_files = 0
+    total_store_size = 0
+
+    conn = sqlite3.connect(appconfig.database_file)
+    c = conn.cursor()
+    c.execute("SELECT COUNT(fileID) FROM files")
+
+    row = c.fetchone()
+
+    total_db_files = row[0]
+
+    c.execute("SELECT sum(filesize) FROM files")
+
+    row = c.fetchone()
+
+    total_db_size = row[0]
+
+    conn.close()
+
+    if stats_level == 'full':
+        for r, d, files in os.walk(os.path.join(appconfig.base_directory, "files")):
+            total_store_files += len(files)
+            for file in files:
+                total_store_size += os.path.getsize(os.path.join(r, file))
+
+    return (total_db_files, total_db_size, total_store_files, total_store_size)
+
+
+def bytes_to_human(bytes, to, bsize=1024):
+    """convert bytes to megabytes, etc.
+       sample code:
+           print('mb= ' + str(bytesto(314575262000000, 'm')))
+
+       sample output:
+           mb= 300002347.946
+    """
+
+    a = {'k': 1, 'm': 2, 'g': 3, 't': 4, 'p': 5, 'e': 6}
+    r = float(bytes)
+    for i in range(a[to]):
+        r = r / bsize
+
+    return (r)
+
+
+def dump_stats(appconfig, print_stats):
+    print("\n*** Database statistics ***\n")
+
+    if print_stats == 'full':
+        print("\t *** Please be patient while file store statistics are calculated. This may take a while! ***\n")
+
+    (total_db_files, total_db_size, total_store_files, total_store_size) = get_stats(appconfig, print_stats)
+
+    print("Total files in database: {:,d}".format(total_db_files))
+    print("Total size of files in database: {:,d} bytes ({:,f} MB, {:,f} GB, {:,f} TB)\n".format(total_db_size,
+                                                                                                 bytes_to_human(
+                                                                                                     total_db_size,
+                                                                                                     'm'),
+                                                                                                 bytes_to_human(
+                                                                                                     total_db_size,
+                                                                                                     'g'),
+                                                                                                 bytes_to_human(
+                                                                                                     total_db_size,
+                                                                                                     't')))
+
+    if print_stats == 'full':
+        print("Total files in file store: {:,d}".format(total_store_files))
+        print("Total size of files in file store: {:,d} bytes ({:,f} MB, {:,f} GB, {:,f} TB)\n".format(total_store_size,
+                                                                                                       bytes_to_human(
+                                                                                                           total_store_size,
+                                                                                                           'm'),
+                                                                                                       bytes_to_human(
+                                                                                                           total_store_size,
+                                                                                                           'g'),
+                                                                                                       bytes_to_human(
+                                                                                                           total_store_size,
+                                                                                                           't')))
+
+        count_discrepancy = False
+        size_discrepancy = False
+
+        if not total_db_files == total_store_files:
+            count_discrepancy = True
+
+        if not total_db_size == total_store_size:
+            size_discrepancy = True
+
+        if size_discrepancy or count_discrepancy:
+            print("\n*** WARNING ***")
+
+        if size_discrepancy:
+            print(
+                "There is a discrepancy between the size of files in the database ({:,d}) and the file store ({:,d})! Delta: {:,d} bytes".format(
+                    total_db_size, total_store_size, total_db_size - total_store_size))
+
+        if count_discrepancy:
+            print(
+                "There is a discrepancy between the number of files in the database ({:,d}) and the file store ({:,d})! Delta: {:,d}".format(
+                    total_db_files, total_store_files, total_db_files - total_store_files))
+
+        if size_discrepancy or count_discrepancy:
+            print("**It is recommended to use the --verify switch to correct this.")
+        else:
+            print("Database and file store appear to be in sync!")
+
+
+def check_db_to_fs(appconfig):
+    conn = sqlite3.connect(appconfig.database_file)
+    c = conn.cursor()
+    c.execute("SELECT fileid, filepath FROM files ORDER BY filepath")
+
+    bad_files = []
+
+    for row in c:
+        full_path = os.path.join(appconfig.base_directory, row[1]).lower()
+        if not os.path.isfile(full_path):
+            bad_files.append(row[0])
+            print("\t{} is in database but does not exist in file store!".format(full_path))
+
+    conn.close()
+
+    return bad_files
+
+
+def get_files_from_db(appconfig):
+    conn = sqlite3.connect(appconfig.database_file)
+    c = conn.cursor()
+    c.execute("SELECT filepath FROM files")
+
+    file_names = []
+
+    for row in c:
+        file_names.append(row[0])
+
+    conn.close()
+
+    return file_names
+
+
+def check_fs_to_db(appconfig):
+    bad_files = []
+
+    db_file_names = get_files_from_db(appconfig)
+
+    for r, d, files in os.walk(os.path.join(appconfig.base_directory, "files")):
+        for file in files:
+            full_path = os.path.join(r, file)
+            db_path = full_path.replace(appconfig.base_directory, "")
+            db_path = db_path[1:]
+
+            if not db_path in db_file_names:
+                bad_files.append(full_path)
+                print("\t{} is in file store but does not exist in database!".format(full_path))
+
+    return bad_files
+
+
+def get_fileid_from_fileinfo(appconfig, fileinfo):
+    conn = sqlite3.connect(appconfig.database_file)
+    c = conn.cursor()
+
+    hashid = get_hash_id_from_hash_name(appconfig, 'sha1b32')
+
+    c.execute("SELECT fileid FROM FILEHASHES WHERE filehashID = ?;", (hashid,))
+
+    row = c.fetchone()
+
+    conn.close()
+
+    return row[0]
+
+
+def delete_files_from_db(appconfig, files):
+    conn = sqlite3.connect(appconfig.database_file)
+    c = conn.cursor()
+
+    sql = "DELETE FROM FILEHASHES WHERE fileID in ({})".format(
+        ', '.join('?' for _ in list(files)))
+
+    c.execute(sql, files)
+
+    sql = "DELETE FROM files WHERE fileID in ({})".format(
+        ', '.join('?' for _ in list(files)))
+
+    c.execute(sql, files)
+
+    conn.commit()
+
+    conn.close()
+
+
+def delete_file_from_db(appconfig, fileinfo):
+    conn = sqlite3.connect(appconfig.database_file)
+    c = conn.cursor()
+
+    fileid = get_fileid_from_fileinfo(appconfig, fileinfo)
+
+    c.execute("DELETE FROM files WHERE fileid = ?;", (fileid,))
+    conn.commit()
+
+    conn.close()
+
+
+def verify(appconfig):
+    print("\n*** File manager verification ***\n")
+
+    print("Beginning stage 1 (comparing database against file store)...")
+    db_to_fs_bad = check_db_to_fs(appconfig)
+
+    if len(db_to_fs_bad) == 0:
+        print("Stage 1 complete. No inconsistencies detected between database and file system.")
+
+    print("\nBeginning stage 2 (comparing file store against database)...")
+    fs_to_db_bad = check_fs_to_db(appconfig)
+
+    if len(fs_to_db_bad) == 0:
+        print("Stage 2 complete. No inconsistencies detected between file system and database.")
+
+    if len(fs_to_db_bad) == 0 and len(db_to_fs_bad) == 0:
+        print("\n\nNo inconsistencies detected!")
+    else:
+        # we have to fix things
+        print("\n\nFound {:,d} database and {:,d} file system inconsistencies.".format(len(db_to_fs_bad),
+                                                                                       len(fs_to_db_bad)))
+
+        fix_it = input("\nDo you want to fix these issues? [Y|n]: ")
+
+        if not fix_it.lower() == 'n':
+            print("\nDeleting bad records from database...", end='')
+            delete_files_from_db(appconfig, db_to_fs_bad)
+
+            print("Deleted {:,d} records from database!".format(len(db_to_fs_bad)))
+
+            print("Adding files to database...", end='')
+            for file in fs_to_db_bad:
+                fileinfo = get_file_data(file)
+
+                if file_exists_in_database(appconfig, fileinfo):
+                    # nuke it to be clean
+                    delete_file_from_db(appconfig, fileinfo)
+
+                add_file_to_db(appconfig, fileinfo)
+                if copy_file_to_store(appconfig, fileinfo):
+                    os.remove(file)
+
+            print("Added {:,d} files to database!".format(len(fs_to_db_bad)))
+
+            print("\n\n*** Repair complete! ***")
+
+
+def main():
     parser = argparse.ArgumentParser(
         description="""File manager that can import files,
                         export file sets based on a list of hashes, export files NOT in a list, etc.""", epilog="""
@@ -961,7 +1212,17 @@ def main():
                                                 This should be the first argument provided.
                                                 """)
 
-    # does this need nargs??
+    parser.add_argument("--print_stats", choices=['lite', 'full'], help="""'lite' will produce statistics from
+    information in the database only. 'full' will look at both the database and file store.
+        """)
+
+    parser.add_argument("--verify", action="store_true", help="""Perform consistency check.
+     Stage 1 is verifying what is in the database against what is in the file store.
+     Stage 2 is verifying what is in the file store against the database.
+     When comparison is complete, the results are displayed and, if any issues are found,
+     options presented to correct any inconsistencies.
+            """)
+
     import_group = parser.add_argument_group('Import options', 'These options determine how files are imported')
     import_group.add_argument(
         "--import_from", help="""List of comma separated directories to import
@@ -1065,6 +1326,9 @@ def main():
 
     # Process things in a sane order so things later down the list of options are as complete as possible
 
+    if args.verify:
+        verify(appconfig)
+
     if args.import_from:  # since at least something was passed to this argument, lets try to import
         if extensions.intersection(auto_delete_extensions):
             print(
@@ -1122,12 +1386,14 @@ def main():
             # TODO Add error handling/try catch, etc
             # TODO make backup of SQLite DB on startup (if newer than last)
             # TODO add --purge_files that takes a list of files and cleans file store and DB of those hashes
-            # TODO add --print_stats (total files, totals by file extension?)
             # TODO add --verify that compares whats on disk to what is in database and what is in database to what is on disk.
             #   if on disk and not database, add, if in db and not disk, delete from db
 
-    if not args.export_delta and not args.export_existing and not args.generate_hash_list and not args.import_from:
-        print("***Nothing to do! Please specify one or more options and try again.***")
+    if args.print_stats:
+        dump_stats(appconfig, args.print_stats)
+
+    if not args.export_delta and not args.export_existing and not args.generate_hash_list and not args.import_from and not args.print_stats and not args.verify:
+        dump_stats(appconfig, 'lite')
 
 
 if __name__ == '__main__':
