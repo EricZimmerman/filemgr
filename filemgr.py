@@ -1118,7 +1118,8 @@ def get_fileid_from_fileinfo(appconfig, fileinfo):
 
     hashid = get_hash_id_from_hash_name(appconfig, 'sha1b32')
 
-    c.execute("SELECT fileid FROM FILEHASHES WHERE hashID = ? and filehash = ?;", (hashid, fileinfo['hashes']['sha1b32']))
+    c.execute("SELECT fileid FROM FILEHASHES WHERE hashID = ? AND filehash = ?;",
+              (hashid, fileinfo['hashes']['sha1b32']))
 
     row = c.fetchone()
 
@@ -1192,7 +1193,7 @@ def verify(appconfig):
             print("Deleted {:,d} records from database!".format(len(db_to_fs_bad)))
 
             # set up a clean staging area for files to be imported from
-            verify_directory = os.path.join(appconfig.base_directory,"verify")
+            verify_directory = os.path.join(appconfig.base_directory, "verify")
 
             if os.path.isdir(verify_directory):
                 shutil.rmtree(verify_directory)
@@ -1210,7 +1211,7 @@ def verify(appconfig):
                 # move each file to a staging directory, then call import work on it. done
                 head, tail = os.path.split(file)
 
-                to_file = os.path.join(verify_directory,tail)
+                to_file = os.path.join(verify_directory, tail)
 
                 unique_prefix = 0
 
