@@ -242,7 +242,7 @@ def import_files_work(appconfig, dirname):
     files_copied = 0
 
     # Looking up each hash is sllllllow, so pull em all in as a set and just look there!
-    print("Getting existing hashes from database...")
+    print("Getting existing hashes from database...", end='')
     existing_hashes = get_sha1b32_from_database(appconfig)
 
     print("Got {:,d} hashes from database. Looking for files.\n".format(len(existing_hashes)))
@@ -491,6 +491,15 @@ def get_file_data(file):
     fileinfo['hashes']['sha1b16'] = sha1b16
     fileinfo['hashes']['sha1b32'] = sha1b32
     fileinfo['hashes']['md5'] = md5hash
+
+    parts = os.path.splitext(file.lower())
+    ext = ''
+
+    if len(parts) == 2:
+        ext = parts[1]
+
+    fileinfo['extension'] = ext.lower()
+    fileinfo['file_store_name'] = sha1b32 + fileinfo['extension']
 
     return fileinfo
 
@@ -1109,7 +1118,7 @@ def get_fileid_from_fileinfo(appconfig, fileinfo):
 
     hashid = get_hash_id_from_hash_name(appconfig, 'sha1b32')
 
-    c.execute("SELECT fileid FROM FILEHASHES WHERE filehashID = ?;", (hashid,))
+    c.execute("SELECT fileid FROM FILEHASHES WHERE hashID = ? and filehash = ?;", (hashid, fileinfo['hashes']['sha1b32']))
 
     row = c.fetchone()
 
@@ -1142,6 +1151,9 @@ def delete_file_from_db(appconfig, fileinfo):
     c = conn.cursor()
 
     fileid = get_fileid_from_fileinfo(appconfig, fileinfo)
+
+    c.execute("DELETE FROM filehashes WHERE fileid = ?;", (fileid,))
+    conn.commit()
 
     c.execute("DELETE FROM files WHERE fileid = ?;", (fileid,))
     conn.commit()
@@ -1179,7 +1191,15 @@ def verify(appconfig):
 
             print("Deleted {:,d} records from database!".format(len(db_to_fs_bad)))
 
-            print("Adding files to database...", end='')
+            # set up a clean staging area for files to be imported from
+            verify_directory = os.path.join(appconfig.base_directory,"verify")
+
+            if os.path.isdir(verify_directory):
+                shutil.rmtree(verify_directory)
+
+            os.mkdir(verify_directory)
+
+            print("Adding files to database...")
             for file in fs_to_db_bad:
                 fileinfo = get_file_data(file)
 
@@ -1187,11 +1207,26 @@ def verify(appconfig):
                     # nuke it to be clean
                     delete_file_from_db(appconfig, fileinfo)
 
-                add_file_to_db(appconfig, fileinfo)
-                if copy_file_to_store(appconfig, fileinfo):
-                    os.remove(file)
+                # move each file to a staging directory, then call import work on it. done
+                head, tail = os.path.split(file)
 
-            print("Added {:,d} files to database!".format(len(fs_to_db_bad)))
+                to_file = os.path.join(verify_directory,tail)
+
+                unique_prefix = 0
+
+                while os.path.isfile(to_file):
+                    # file exists, so get a unique name
+                    to_file = os.path.join(verify_directory, str(unique_prefix) + "_" + tail)
+                    unique_prefix += 1
+
+                shutil.move(file, to_file)
+
+            (files_added_to_database, total_files, files_deleted, files_copied, files_with_duplicate_hashes,
+             files_with_invalid_extensions) = import_files_work(appconfig, verify_directory)
+
+            shutil.rmtree(verify_directory)
+
+            print("\nAdded {:,d} files to database!".format(files_added_to_database))
 
             print("\n\n*** Repair complete! ***")
 
@@ -1391,7 +1426,7 @@ def main():
         dump_stats(appconfig, args.print_stats)
 
     if not args.export_delta and not args.export_existing and not args.generate_hash_list and not args.import_from and not args.print_stats and not args.verify:
-        print("You didnt ask me to do anything, so here are some statistics:")
+        print("You didn't ask me to do anything, so here are some statistics:")
         dump_stats(appconfig, 'lite')
 
 
