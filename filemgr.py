@@ -8,7 +8,6 @@ import shutil
 import datetime
 import re
 import zipfile
-import logging
 import sys
 
 # TODO use pathlib vs os.path calls? this is 3.4 only
@@ -20,18 +19,18 @@ extensions = {'.jpg', '.avi', '.ram', '.rm', '.wmv', '.pdf', '.mov', '.mp4', '.f
               '.mpeg', '.png', '.3g2', '.3gp', '.asf', '.bmp', '.divx', '.gif', '.jpg', '.m1v', '.vob', '.mod', '.tif',
               '.mkv', '.jp2', '.psd', '.m4v', '.pcx'}
 
-# a list of extensions to delete. If any of these extensions are found in 'extensions' as well, the import will be cancelled
+# a list of extensions to delete. If any of these extensions are found in 'extensions' the import will be cancelled
 auto_delete_extensions = {'.db', '.com', '.scr', '.htm', '.html', '.url', '.thm', '.tmp', '.ds_store', '.ico', '.rtf',
                           '.doc', '.ini', '.ascii', '.dat', '.svg'}
 
-BUFSIZE = 65536  #8192 # file reading buffer size 8192 * 64?
+BUFFER_SIZE = 65536  # 8192 # file reading buffer size 8192 * 64?
 
-logger = logging.getLogger('filemgr')
-logger.setLevel(logging.CRITICAL)
-fh = logging.FileHandler('filemgr_debug.log')
-formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-fh.setFormatter(formatter)
-logger.addHandler(fh)
+# logger = logging.getLogger('filemgr')
+# logger.setLevel(logging.CRITICAL)
+# fh = logging.FileHandler('filemgr_debug.log')
+# formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+# fh.setFormatter(formatter)
+# logger.addHandler(fh)
 
 
 def safeprint(s):
@@ -256,11 +255,9 @@ def import_files_work(appconfig, dirname):
         if len(files) > 0:
             safeprint("\n\tFound {:,d} files in {}. Processing...".format(len(files), dirpath))
 
-            logger.info("Found {:,d} files in {}".format(len(files), dirpath))
+            #   logger.info("Found {:,d} files in {}".format(len(files), dirpath))
 
         for name in files:
-
-
             full_path_name = os.path.join(dirpath, name)
 
             file_counter += 1
@@ -287,14 +284,14 @@ def import_files_work(appconfig, dirname):
                         continue
 
                     if ext in extensions:
-                        logger.info(
-                            "{} before fileinfo = get_file_data(full_path_name)".format(
-                                datetime.datetime.now().strftime('%x %X')))
+                        # logger.info(
+                        #     "{} before fileinfo = get_file_data(full_path_name)".format(
+                        #         datetime.datetime.now().strftime('%x %X')))
 
                         fileinfo = get_file_data(full_path_name)
 
-                        logger.info("{} after fileinfo = get_file_data(full_path_name)".format(
-                            datetime.datetime.now().strftime('%x %X')))
+                        # logger.info("{} after fileinfo = get_file_data(full_path_name)".format(
+                        #     datetime.datetime.now().strftime('%x %X')))
 
                         if not fileinfo['hashes']['sha1b32'] in existing_hashes:
                             files_added_to_database += 1
@@ -314,8 +311,8 @@ def import_files_work(appconfig, dirname):
                             # as this syncs it up maybe here is where you do extra hashing of what is on file
                             #  system to make sure the 2 match, properly named, etc
 
-                        logger.info("{} before copied = copy_file_to_store(appconfig, fileinfo)):".format(
-                            datetime.datetime.now().strftime('%x %X')))
+                        # logger.info("{} before copied = copy_file_to_store(appconfig, fileinfo)):".format(
+                        #     datetime.datetime.now().strftime('%x %X')))
 
                         copied = copy_file_to_store(appconfig, fileinfo)
 
@@ -326,8 +323,8 @@ def import_files_work(appconfig, dirname):
                                     file_counter,
                                     len(files), fileinfo['hashes']['sha1b32'], fileinfo['filesize']))
 
-                        logger.info("{} after copied = copy_file_to_store(appconfig, fileinfo)):".format(
-                            datetime.datetime.now().strftime('%x %X')))
+                        # logger.info("{} after copied = copy_file_to_store(appconfig, fileinfo)):".format(
+                        #     datetime.datetime.now().strftime('%x %X')))
 
                         if not copied:
                             files_with_duplicate_hashes.append(full_path_name)
@@ -385,7 +382,6 @@ def import_files_work(appconfig, dirname):
 
 
 def file_exists_in_database(appconfig, fileinfo):
-    # TODO need methods to insert new hash types into DB if they do not exist,
     conn = sqlite3.connect(appconfig.database_file)
     c = conn.cursor()
     c.execute(
@@ -404,7 +400,6 @@ def file_exists_in_database(appconfig, fileinfo):
 
 
 def get_sha1b32_from_database(appconfig):
-    # TODO need methods to insert new hash types into DB if they do not exist,
     # pull them out and cache on startup or when first pulled?
 
     conn = sqlite3.connect(appconfig.database_file)
@@ -412,8 +407,7 @@ def get_sha1b32_from_database(appconfig):
 
     hash_id = get_hash_id_from_hash_name(appconfig, "sha1b32")
 
-    c.execute(
-        "SELECT filehash FROM filehashes WHERE hashid = ?;", (hash_id,))
+    c.execute("SELECT filehash FROM filehashes WHERE hashid = ?;", (hash_id,))
 
     rows = c.fetchall()
 
@@ -471,13 +465,13 @@ def get_file_data(file):
     md4 = hashlib.new('md4')
 
     f = open(file, 'rb')
-    buf = f.read(BUFSIZE)
+    buf = f.read(BUFFER_SIZE)
     while buf != b'':
         md5.update(buf)
         sha1.update(buf)
         md4.update(buf)
         ed2k.update(buf)
-        buf = f.read(BUFSIZE)
+        buf = f.read(BUFFER_SIZE)
     f.close()
 
     sha1b16 = sha1.hexdigest().upper()
@@ -527,7 +521,7 @@ def setup_base_directory(directory):
         raise
 
 
-def check_db(appconfig):
+def init_db(appconfig):
     # create, setup tables
     #one table is hashname
     #another is for files that references hashname pk
@@ -568,7 +562,7 @@ def check_db(appconfig):
 
     #add indexes
 
-    c.execute("SELECT COUNT(*) FROM sqlite_master where type = 'index';")
+    c.execute("SELECT COUNT(*) FROM sqlite_master WHERE type = 'index';")
 
     row = c.fetchone()
 
@@ -630,8 +624,6 @@ def generate_hash_list(appconfig, hash_type, suppress_file_info):
     conn = sqlite3.connect(appconfig.database_file)
 
     file_cursor = conn.execute("SELECT files.filepath, files.filesize, files.fileID FROM files ORDER BY fileID")
-
-    sql = ''
 
     if hash_type == 'all':
         sql = 'SELECT hashid, hashname FROM hashtypes ORDER BY hashname ASC'
@@ -999,11 +991,11 @@ def get_stats(appconfig, stats_level):
             for file in files:
                 total_store_size += os.path.getsize(os.path.join(r, file))
 
-    return (total_db_files, total_db_size, total_store_files, total_store_size)
+    return total_db_files, total_db_size, total_store_files, total_store_size
 
 
-def bytes_to_human(bytes, to, bsize=1024):
-    """convert bytes to megabytes, etc.
+def bytes_to_human(byte_value, to, bsize=1024):
+    """convert byte_value to megabytes, etc.
        sample code:
            print('mb= ' + str(bytesto(314575262000000, 'm')))
 
@@ -1012,11 +1004,11 @@ def bytes_to_human(bytes, to, bsize=1024):
     """
 
     a = {'k': 1, 'm': 2, 'g': 3, 't': 4, 'p': 5, 'e': 6}
-    r = float(bytes)
+    r = float(byte_value)
     for i in range(a[to]):
-        r = r / bsize
+        r /= bsize
 
-    return (r)
+    return r
 
 
 def dump_stats(appconfig, print_stats):
@@ -1352,9 +1344,6 @@ def main():
                                                     archive in --export_directory.
                                                     """, action="store_true")
 
-
-
-
     # this stores our application parameters so it can get passed around to functions
     appconfig = ApplicationConfiguration()
 
@@ -1377,7 +1366,7 @@ def main():
 
     print('\n\n')
 
-    check_db(appconfig)
+    init_db(appconfig)
 
     # Process things in a sane order so things later down the list of options are as complete as possible
 
@@ -1390,7 +1379,7 @@ def main():
                 "Cannot import files as there is at least one extension in common between 'extensions' and 'auto_delete_extensions: {}".format(
                     ", ".join(extensions.intersection(auto_delete_extensions))))
         else:
-            directories = args.import_from.split(",")  # TODO can argparse do the split?
+            directories = args.import_from.split(",")
             import_files(appconfig, directories)
 
     if args.generate_hash_list:
