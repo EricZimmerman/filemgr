@@ -576,6 +576,8 @@ def init_db(appconfig):
         print("!File path/file size index created")
         c.execute('CREATE UNIQUE INDEX "IU_hashID_fileID" ON "filehashes" ("hashID", "filehash")')
         print("!HashID/file hash index created\n")
+        c.execute('CREATE INDEX "IX_hashID" ON "filehashes" ("hashID")')
+        print("!File hash index created")
 
         conn.commit()
 
@@ -779,18 +781,19 @@ def check_file_exists_in_database(appconfig, hash_id, hash_value):
     conn.close()
 
     if row is None:
-        return False
+        db_info = ('', 0)
     else:
         db_info = (row[0], row[1])
-        return db_info
+
+    return db_info
 
 
 def get_database_delta(appconfig, hash_set, hash_id):
     conn = sqlite3.connect(appconfig.database_file)
     c = conn.cursor()
     sql = "SELECT files.fileID, files.filepath FROM filehashes INNER JOIN files ON files.fileID = filehashes.fileID WHERE filehashes.hashID = ? AND filehashes.filehash NOT in ({0})".format(
-        ', '.join('?' for _ in list(hash_set)))
-    params = list(hash_set)
+        ', '.join('?' for _ in hash_set))
+    params = hash_set
     params.insert(0, str(hash_id))
 
     c.execute(sql, params)
@@ -806,8 +809,7 @@ def get_hash_from_hash_id_and_file_id(appconfig, hash_id, file_id):
     conn = sqlite3.connect(appconfig.database_file)
     c = conn.cursor()
     c.execute(
-        "SELECT filehashes.filehash FROM filehashes INNER JOIN files ON files.fileID = filehashes.fileID "
-        "WHERE filehashes.hashID = ? AND filehashes.fileID = ?;",
+        "SELECT filehashes.filehash FROM filehashes WHERE filehashes.hashID = ? AND filehashes.fileID = ?;",
         (hash_id, file_id))
 
     row = c.fetchone()
@@ -824,7 +826,7 @@ def build_new_out_path(export_directory, new_hash, file_name):
     front = "files\\" + new_hash[0:2]
     mid = new_hash
     ext = os.path.splitext(file_name[1])[-1]
-    out_path = os.path.join(export_directory, front, mid + ext)
+    out_path = os.path.join(export_directory, front, mid + ext.lower())
     return out_path
 
 
@@ -833,6 +835,44 @@ def copy_file(abs_path, log_file, out_path):
         os.makedirs(os.path.dirname(out_path))
     log_file.write("Copying '{}' to '{}'\n".format(abs_path, out_path))
     shutil.copyfile(abs_path, out_path)
+
+
+def get_existing_hash_list(appconfig, hash_id):
+    conn = sqlite3.connect(appconfig.database_file)
+    c = conn.cursor()
+    c.execute(
+        "SELECT fileID, filehash FROM filehashes WHERE filehashes.hashID = ?;", (hash_id, ))
+
+    existing_hashes = {}
+
+  #   row_count = 0
+
+    record = c.fetchone()
+
+    while record:
+        # if row_count % 1000000 == 0:
+        #     print("{}: Database rows fetched: {:,d}".format(datetime.datetime.now().strftime('%x %X'), row_count))
+
+        existing_hashes[record[1]] = record[0]
+        record = c.fetchone()
+      #  row_count += 1
+
+    conn.close()
+
+    return existing_hashes
+
+
+def get_file_from_db(appconfig, file_id):
+    conn = sqlite3.connect(appconfig.database_file)
+    c = conn.cursor()
+    c.execute(
+        "SELECT filepath FROM files WHERE fileID = ?;", (file_id, ))
+
+    record = c.fetchone()
+
+    conn.close()
+
+    return record[0]
 
 
 def export_files(appconfig, export_existing, file_name):
@@ -888,49 +928,90 @@ def export_files(appconfig, export_existing, file_name):
 
             (file_path, file_size) = check_file_exists_in_database(appconfig, hash_id, line)
 
+            # TODO This needs cleaned up in regard to the paths. the database should store things in one format
+            # right now its all bunged up
+
             if file_path:
-                print("\t\tFile with hash '{}' found! Copying {:,d} bytes...".format(line, file_size))
+                print(
+                    "\t\t({:,d}) File with hash '{}' found! Copying {:,d} bytes...".format(hash_count, line, file_size))
                 found_files += 1
                 abs_path = os.path.join(appconfig.base_directory, file_path)
 
+                if not os.path.isfile(abs_path):
+                    front, ext = os.path.splitext(abs_path)
+
+                    abs_path = front + ext.lower()
+
+                abs_path = abs_path.replace("\\", "/")
+
                 if appconfig.rename_exported and not hash_name == 'sha1b32':  # the default is sha1b32
 
-                    out_path = build_new_out_path(export_directory, line, file_path)
+                    out_path = build_new_out_path(export_directory, line, file_path.replace("\\", "/"))
                 else:
-                    out_path = os.path.join(export_directory, file_path)
+                    out_path = os.path.join(export_directory, file_path.replace("\\", "/"))
 
+                print("Copying '{}' to '{}'\n".format(abs_path, out_path))
                 copy_file(abs_path, log_file, out_path)  # TODO Error handling here
     else:
-        hashes = [line.strip for line in hash_file]
-        # for line in hash_file:
-        #     line = line.strip()
-        #     hashes.append(line)
+        print("Getting hashes from file...")
+        hashes = [line.strip() for line in hash_file]
 
         hash_set = set(hashes)  # get rid of any dupes
         hash_count = len(hash_set)
 
-        db_rows = get_database_delta(appconfig, hash_set, hash_id)
+        file_count = 0
 
-        # delta file info is now in db_rows.
-        # look at each and if rename is true we have to do more work. if not, start copying
+        print("Found {:,d} hashes in file!".format(hash_count))
 
-        found_files = len(db_rows)
+        # sql wont work
+        # export entire DB for hash_id to file containing: file_id and hash for hash_id
+        # once done, read that into dictionary with hash: fileid
+        # loop thru hash_set and remove similar items from dictionary
+        # when done, export files remaining in dictionary
 
-        for row in db_rows:
-            abs_path = os.path.join(appconfig.base_directory, row[1])
+        print("Getting existing hashes from database...")
+        existing_hash_list = get_existing_hash_list(appconfig, hash_id)
 
-            if appconfig.rename_exported and not hash_name == 'sha1b32':  # the default is sha1b32
-                # sigh. we have to now get the appropriate hash value from the database and do trickery based on that
-                # we know the file id, so we can get the hash for the corresponding hash_type from the database
-                # since we also know the hash_id
+        print("Found {:,d} hashes in database!".format(len(existing_hash_list)))
 
-                new_hash = get_hash_from_hash_id_and_file_id(appconfig, hash_id, row[0])
+        for hash in hash_set:
+            if hash in existing_hash_list:
+                del existing_hash_list[hash]
 
-                out_path = build_new_out_path(export_directory, new_hash, row)
-            else:
-                out_path = os.path.join(export_directory, row[1])
+        print("After pruning there are {:,d} hashes to export.".format(len(existing_hash_list)))
 
-            copy_file(abs_path, log_file, out_path)  # TODO Error handling here
+        for value in existing_hash_list.values():
+            # value is fileID for the file, so now we can get info on the file and export
+            db_name = get_file_from_db(appconfig, value)
+            if db_name:
+                abs_path = os.path.join(appconfig.base_directory, db_name)
+                if not os.path.isfile(abs_path):
+                    front, ext = os.path.splitext(abs_path)
+                    abs_path = front + ext.lower()
+
+                abs_path = abs_path.replace("\\", "/")
+
+                if appconfig.rename_exported and not hash_name == 'sha1b32':  # the default is sha1b32
+                    # sigh. we have to now get the appropriate hash value from the database and do trickery based on that
+                    # we know the file id, so we can get the hash for the corresponding hash_type from the database
+                    # since we also know the hash_id
+
+                    new_hash = get_hash_from_hash_id_and_file_id(appconfig, hash_id, value)
+
+                    out_path = build_new_out_path(export_directory, new_hash, db_name)
+                else:
+                    out_path = os.path.join(export_directory, db_name.replace("\\", "/"))
+
+               # print("abs_path is {}".format(abs_path))
+              #  print("out_path is {}".format(out_path))
+
+                file_count += 1
+
+                print("[{:,d}/{:,d}] Copying '{}' to '{}'\n".format(file_count,len(existing_hash_list), abs_path, out_path))
+                copy_file(abs_path, log_file, out_path)  # TODO Error handling here
+
+
+
 
     hash_file.close()
     log_file.close()
@@ -1426,7 +1507,6 @@ def main():
             #print('\n'.join("%s: %s" % item for item in attrs.items()))
 
             # TODO have a built in web mode to allow searching, exporting etc?
-
             # TODO Add error handling/try catch, etc
             # TODO make backup of SQLite DB on startup (if newer than last)
             # TODO add --purge_files that takes a list of files and cleans file store and DB of those hashes
