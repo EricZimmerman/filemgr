@@ -1056,13 +1056,13 @@ def get_stats(appconfig, stats_level):
 
     row = c.fetchone()
 
-    total_db_files = row[0]
+    total_db_files = row[0] or 0
 
     c.execute("SELECT sum(filesize) FROM files")
 
     row = c.fetchone()
 
-    total_db_size = row[0]
+    total_db_size = row[0] or 0
 
     conn.close()
 
@@ -1083,6 +1083,9 @@ def bytes_to_human(byte_value, to, bsize=1024):
        sample output:
            mb= 300002347.946
     """
+
+    if byte_value is None:
+        return float(0)
 
     a = {'k': 1, 'm': 2, 'g': 3, 't': 4, 'p': 5, 'e': 6}
     r = float(byte_value)
